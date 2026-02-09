@@ -12,12 +12,36 @@ import javax.annotation.Nonnull;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-
 import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 public class MultipleCustomUIHud extends CustomUIHud {
+
+    /* ===============================
+       CLIENT READY SAFETY (CRITICAL)
+       =============================== */
+
+    private static final Set<UUID> CLIENT_READY = ConcurrentHashMap.newKeySet();
+
+    public static void markClientReady(@Nonnull PlayerRef playerRef) {
+        CLIENT_READY.add(playerRef.getUuid());
+    }
+
+    public static void resetClientReady(@Nonnull PlayerRef playerRef) {
+        CLIENT_READY.remove(playerRef.getUuid());
+    }
+
+    private boolean canSendUI() {
+        return CLIENT_READY.contains(this.getPlayerRef().getUuid());
+    }
+
+    /* ===============================
+       REFLECTION SETUP
+       =============================== */
 
     private static Method BUILD_METHOD;
     private static Field COMMANDS_FIELD;
@@ -28,8 +52,8 @@ public class MultipleCustomUIHud extends CustomUIHud {
             BUILD_METHOD.setAccessible(true);
         } catch (NoSuchMethodException e) {
             BUILD_METHOD = null;
-            MultipleHUD.getInstance().getLogger().at(Level.SEVERE).log("Could not find method 'build' in CustomUIHud");
-            MultipleHUD.getInstance().getLogger().at(Level.SEVERE).log(e.getMessage());
+            MultipleHUD.getInstance().getLogger().at(Level.SEVERE)
+                    .log("Could not find method 'build' in CustomUIHud");
         }
 
         try {
@@ -37,41 +61,37 @@ public class MultipleCustomUIHud extends CustomUIHud {
             COMMANDS_FIELD.setAccessible(true);
         } catch (NoSuchFieldException e) {
             COMMANDS_FIELD = null;
-            MultipleHUD.getInstance().getLogger().at(Level.SEVERE).log("Could not find field 'commands' in UICommandBuilder");
-            MultipleHUD.getInstance().getLogger().at(Level.SEVERE).log(e.getMessage());
+            MultipleHUD.getInstance().getLogger().at(Level.SEVERE)
+                    .log("Could not find field 'commands' in UICommandBuilder");
         }
     }
 
+    /* ===============================
+       INTERNAL BUILDER
+       =============================== */
+
     private static class PrefixedUICommandBuilder extends UICommandBuilder {
-        private final List<CustomUICommand> wrappedCommands = new ObjectArrayList();
+
+        private final List<CustomUICommand> wrappedCommands = new ObjectArrayList<>();
         private final String prefix;
 
         public PrefixedUICommandBuilder(@NonNullDecl String id) {
-            this.prefix = "#MultipleHUD #" + id;;
-        }
-
-        public String getPrefix() {
-            return this.prefix;
+            this.prefix = "#MultipleHUD #" + id;
         }
 
         private void prefixCommands() throws IllegalAccessException {
             final List<CustomUICommand> commands =
                     (List<CustomUICommand>) COMMANDS_FIELD.get(this);
 
-            for (int i = 0, n = commands.size(); i < n; i++) {
-                CustomUICommand command = commands.get(i);
-                if (command.selector == null) {
-                    command.selector = this.prefix;
-                } else {
-                    command.selector = this.prefix + ' ' + command.selector;
-                }
+            for (CustomUICommand command : commands) {
+                command.selector = command.selector == null
+                        ? this.prefix
+                        : this.prefix + " " + command.selector;
                 wrappedCommands.add(command);
             }
             commands.clear();
         }
 
-        // this will be called by update method of CustomUIHud
-        // here as a workaround of buggy huds. shouldn't be necessary normally.
         @Override
         @Nonnull
         public CustomUICommand[] getCommands() {
@@ -80,25 +100,28 @@ public class MultipleCustomUIHud extends CustomUIHud {
             } catch (IllegalAccessException e) {
                 throw new RuntimeException(e);
             }
-            CustomUICommand[] commands = wrappedCommands.toArray(new CustomUICommand[0]);
-            // we need to clear the commands if the hud mod author decided to call update himself.
+            CustomUICommand[] result = wrappedCommands.toArray(new CustomUICommand[0]);
             wrappedCommands.clear();
-            return commands;
+            return result;
         }
 
-        void appendCommandsTo (UICommandBuilder builder) throws IllegalAccessException {
+        void appendCommandsTo(UICommandBuilder builder) throws IllegalAccessException {
             this.prefixCommands();
             final List<CustomUICommand> commands =
                     (List<CustomUICommand>) COMMANDS_FIELD.get(builder);
             commands.addAll(this.wrappedCommands);
         }
 
-        void addCustomCommand (CustomUICommandType type, String selector, String document) {
+        void addCustomCommand(CustomUICommandType type, String selector, String document) {
             this.wrappedCommands.add(new CustomUICommand(type, selector, null, document));
         }
     }
 
-    static void buildHud (
+    /* ===============================
+       HUD LOGIC
+       =============================== */
+
+    private static void buildHud(
             @Nonnull UICommandBuilder uiCommandBuilder,
             @NonNullDecl String normalizedId,
             @Nonnull CustomUIHud hud,
@@ -106,20 +129,27 @@ public class MultipleCustomUIHud extends CustomUIHud {
     ) {
         try {
             if (BUILD_METHOD == null || COMMANDS_FIELD == null) return;
-            PrefixedUICommandBuilder singleHudBuilder = new PrefixedUICommandBuilder(normalizedId);
+
+            PrefixedUICommandBuilder builder = new PrefixedUICommandBuilder(normalizedId);
+
             if (hudExists) {
-                singleHudBuilder.addCustomCommand(CustomUICommandType.Clear, singleHudBuilder.getPrefix(), null);
+                builder.addCustomCommand(CustomUICommandType.Clear, builder.prefix, null);
             } else {
-                singleHudBuilder.addCustomCommand(CustomUICommandType.AppendInline, "#MultipleHUD","Group #" + normalizedId + " {}");
+                builder.addCustomCommand(
+                        CustomUICommandType.AppendInline,
+                        "#MultipleHUD",
+                        "Group #" + normalizedId + " {}"
+                );
             }
-            BUILD_METHOD.invoke(hud, singleHudBuilder);
-            singleHudBuilder.appendCommandsTo(uiCommandBuilder);
+
+            BUILD_METHOD.invoke(hud, builder);
+            builder.appendCommandsTo(uiCommandBuilder);
+
         } catch (IllegalAccessException | InvocationTargetException e) {
             throw new RuntimeException(e);
         }
     }
 
-    // key is the id as provided by mod, value is normalized id to be compatible with hud.
     private final HashMap<String, String> normalizedIds = new HashMap<>();
     private final HashMap<String, CustomUIHud> customHuds = new HashMap<>();
 
@@ -130,43 +160,45 @@ public class MultipleCustomUIHud extends CustomUIHud {
     @Override
     protected void build(@NonNullDecl UICommandBuilder uiCommandBuilder) {
         uiCommandBuilder.append("HUD/MultipleHUD.ui");
-        // individual hud renders will be handled by the `add` method.
-        // full re-renders can be triggered by the `show` method.
     }
 
     @Override
     public void show() {
-        UICommandBuilder commandBuilder = new UICommandBuilder();
-        this.build(commandBuilder);
-        for (String identifier : customHuds.keySet()) {
-            String normalizedId = normalizedIds.get(identifier);
-            CustomUIHud hud = customHuds.get(identifier);
-            buildHud(commandBuilder, normalizedId, hud, false);
-        }
-        this.update(true, commandBuilder);
-    }
+        if (!canSendUI()) return;
 
-    public void add (@NonNullDecl String identifier, @NonNullDecl CustomUIHud hud) {
-        UICommandBuilder commandBuilder = new UICommandBuilder();
+        UICommandBuilder builder = new UICommandBuilder();
+        this.build(builder);
 
-        String normalizedId = normalizedIds.computeIfAbsent(identifier, i -> i.replaceAll("[^a-zA-Z0-9]", ""));
-        CustomUIHud existingHud = customHuds.put(identifier, hud);
-        if (existingHud != hud) {
-            customHuds.put(identifier, hud);
+        for (String id : customHuds.keySet()) {
+            buildHud(builder, normalizedIds.get(id), customHuds.get(id), false);
         }
 
-        buildHud(commandBuilder, normalizedId, hud, existingHud != null);
-        update(false, commandBuilder);
+        update(true, builder);
     }
 
-    public void remove (@NonNullDecl String identifier) {
-        String normalizedId = normalizedIds.get(identifier);
-        boolean shownBefore = normalizedId != null;
-        if (!shownBefore) return;
-        normalizedIds.remove(identifier);
+    public void add(@NonNullDecl String identifier, @NonNullDecl CustomUIHud hud) {
+        if (!canSendUI()) return;
+
+        UICommandBuilder builder = new UICommandBuilder();
+        String normalizedId = normalizedIds.computeIfAbsent(
+                identifier,
+                i -> i.replaceAll("[^a-zA-Z0-9]", "")
+        );
+
+        CustomUIHud existing = customHuds.put(identifier, hud);
+        buildHud(builder, normalizedId, hud, existing != null);
+        update(false, builder);
+    }
+
+    public void remove(@NonNullDecl String identifier) {
+        if (!canSendUI()) return;
+
+        String normalizedId = normalizedIds.remove(identifier);
+        if (normalizedId == null) return;
+
         customHuds.remove(identifier);
-        UICommandBuilder commandBuilder = new UICommandBuilder();
-        commandBuilder.remove("#MultipleHUD #" + normalizedId);
-        update(false, commandBuilder);
+        UICommandBuilder builder = new UICommandBuilder();
+        builder.remove("#MultipleHUD #" + normalizedId);
+        update(false, builder);
     }
 }
