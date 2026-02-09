@@ -24,17 +24,25 @@ public class MultipleHUD extends JavaPlugin {
     @Override
     protected void setup() {
         super.setup();
-        //this.getEntityStoreRegistry().registerSystem(new CustomTickingSystem());
+        // Nothing to initialize here.
+        // UI safety is handled inside MultipleCustomUIHud.
     }
 
-    public void setCustomHud(Player player, PlayerRef playerRef, String hudIdentifier, CustomUIHud customHud) {
+    public void setCustomHud(
+            Player player,
+            PlayerRef playerRef,
+            String hudIdentifier,
+            CustomUIHud customHud
+    ) {
         CustomUIHud currentCustomHud = player.getHudManager().getCustomHud();
+
         if (currentCustomHud instanceof MultipleCustomUIHud multipleCustomUIHud) {
             multipleCustomUIHud.add(hudIdentifier, customHud);
         } else {
             MultipleCustomUIHud mchud = new MultipleCustomUIHud(playerRef);
             player.getHudManager().setCustomHud(playerRef, mchud);
             mchud.add(hudIdentifier, customHud);
+
             if (currentCustomHud != null) {
                 mchud.add("Unknown", currentCustomHud);
             }
@@ -42,11 +50,16 @@ public class MultipleHUD extends JavaPlugin {
     }
 
     @Deprecated
-    public void hideCustomHud(Player player, PlayerRef playerRef, String hudIdentifier) {
+    public void hideCustomHud(
+            Player player,
+            PlayerRef playerRef,
+            String hudIdentifier
+    ) {
         hideCustomHud(player, hudIdentifier);
     }
+
     public void hideCustomHud(Player player, String hudIdentifier) {
-        var currentCustomHud = player.getHudManager().getCustomHud();
+        CustomUIHud currentCustomHud = player.getHudManager().getCustomHud();
 
         if (currentCustomHud instanceof MultipleCustomUIHud multipleCustomUIHud) {
             multipleCustomUIHud.remove(hudIdentifier);
